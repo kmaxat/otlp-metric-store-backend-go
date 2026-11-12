@@ -1,0 +1,76 @@
+# ClickHouse, the metric store and a load generator; see the README's Quick start.
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.2
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: metricstore
+    ports:
+      - "9000:9000" # native protocol
+      - "8123:8123" # HTTP interface
+    volumes:
+      # Creates the tables on first start; the metric store only inserts.
+      - ./deploy/clickhouse/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      # Healthy once the tables exist, not just when the server answers.
+      test: ["CMD", "clickhouse-client", "--password", "metricstore", "--query",
+             "SELECT 1 FROM otel_metrics_datapoints LIMIT 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  metric-store:
+    build: .
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      METRICSTORE_LISTEN_ADDR: 0.0.0.0:4317
+      CLICKHOUSE_ADDR: clickhouse:9000
+      CLICKHOUSE_PASSWORD: metricstore
+      # Self-metrics on a Prometheus endpoint: curl localhost:9464/metrics.
+      # Logs go to stderr as JSON (docker compose logs metric-store); traces
+      # are not exported (OTEL_TRACES_EXPORTER unset).
+      OTEL_METRICS_EXPORTER: prometheus
+      OTEL_EXPORTER_PROMETHEUS_HOST: 0.0.0.0
+    ports:
+      - "4317:4317"
+      - "9464:9464"
+
+  telemetrygen:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.164.0
+    depends_on:
+      - metric-store
+    command:
+      - metrics
+      - --otlp-endpoint=metric-store:4317
+      - --otlp-insecure
+      - --rate=100
+      - --duration=5m
+      - --otlp-attributes=host.name="telemetrygen-host"
+
+  # The Go toolchain (same version as the Dockerfile), for tests and go
+  # commands: docker compose run --rm go <command>. Not started by `up`.
+  go:
+    image: golang:1.26.10
+    profiles: ["tools"]
+    working_dir: /src
+    volumes:
+      - .:/src
+      - gomod:/go/pkg/mod
+      - gobuild:/root/.cache/go-build
+      # Integration tests start ClickHouse via testcontainers on the host's
+      # Docker, and reach its mapped ports through the host.
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      TESTCONTAINERS_HOST_OVERRIDE: host.docker.internal
+
+volumes:
+  gomod:
+  gobuild:

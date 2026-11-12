@@ -1,0 +1,8 @@
+.git
+.gitignore
+otlp-metric-store
+*.test
+*.out
+README.md
+queries.sql
+docker-compose.yml

@@ -1,0 +1,30 @@
+# The checks `make check` runs locally, on each push to main and each pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod # latest Go 1.26.x
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: Vet
+        run: go vet ./... && go vet -tags integration ./...
+      - name: Lint
+        run: |
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tags integration ./...
+      - name: Dead code
+        run: out=$(go run golang.org/x/tools/cmd/deadcode@v0.52.0 ./...); echo "$out"; test -z "$out"
+      - name: Unit tests
+        run: go test -race -count=1 ./...
+      - name: Integration tests # ClickHouse in Docker via testcontainers
+        run: go test -tags integration -count=1 ./...
